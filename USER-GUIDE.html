@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Design Checklist × Lokalise Figma Widget 與 Plugin 使用手冊">
+  <title>Design Checklist × Lokalise 使用手冊</title>
+  <style>
+    :root {
+      --ink: #16221f;
+      --muted: #5d6c67;
+      --line: #dce7e2;
+      --paper: #f7faf8;
+      --card: #ffffff;
+      --green: #00a95a;
+      --green-dark: #007b42;
+      --mint: #e2f8ed;
+      --amber: #fff4d9;
+      --amber-ink: #7a4e00;
+      --red: #fff0ef;
+      --red-ink: #a8352f;
+      --shadow: 0 18px 45px rgba(24, 68, 47, .10);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+      line-height: 1.65;
+    }
+    .hero {
+      color: white;
+      padding: 68px 24px 52px;
+      background:
+        radial-gradient(circle at 82% 12%, rgba(132, 255, 193, .31), transparent 26%),
+        radial-gradient(circle at 12% 100%, rgba(46, 174, 118, .54), transparent 33%),
+        linear-gradient(135deg, #063e29, #087b48 62%, #00aa5c);
+    }
+    .wrap { width: min(1120px, calc(100% - 40px)); margin: 0 auto; }
+    .eyebrow { margin: 0 0 12px; color: #baf6d3; font-size: .82rem; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+    h1 { max-width: 740px; margin: 0; font-size: clamp(2.15rem, 6vw, 4.4rem); line-height: 1.1; letter-spacing: -.05em; }
+    .lead { max-width: 660px; margin: 22px 0 0; color: #e4fff0; font-size: 1.08rem; }
+    .badges { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+    .badge { padding: 6px 11px; border: 1px solid rgba(255,255,255,.28); border-radius: 99px; background: rgba(0, 0, 0, .15); font-size: .84rem; }
+    .nav { position: sticky; z-index: 3; top: 0; border-bottom: 1px solid var(--line); background: rgba(255,255,255,.92); backdrop-filter: blur(10px); }
+    .nav .wrap { display: flex; gap: 18px; overflow-x: auto; padding: 13px 0; }
+    .nav a { flex: 0 0 auto; color: var(--muted); font-size: .9rem; font-weight: 700; text-decoration: none; }
+    .nav a:hover { color: var(--green-dark); }
+    main { padding: 48px 0 80px; }
+    section { margin: 0 0 68px; scroll-margin-top: 68px; }
+    h2 { margin: 0 0 8px; font-size: clamp(1.65rem, 3vw, 2.25rem); line-height: 1.2; letter-spacing: -.035em; }
+    h3 { margin: 30px 0 12px; font-size: 1.13rem; }
+    p { margin: 9px 0; }
+    .section-note { max-width: 720px; margin: 0; color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
+    .card { padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: var(--card); box-shadow: 0 5px 20px rgba(22,34,31,.035); }
+    .card h3 { margin: 0 0 7px; }
+    .icon { display: grid; width: 43px; height: 43px; place-items: center; margin-bottom: 15px; border-radius: 13px; background: var(--mint); font-size: 1.35rem; }
+    .flow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 25px; }
+    .flow-step { position: relative; min-height: 115px; padding: 18px 15px; border: 1px solid var(--line); border-radius: 16px; background: var(--card); }
+    .flow-step:not(:last-child)::after { position: absolute; z-index: 1; top: 43%; right: -16px; width: 22px; height: 22px; content: "›"; color: var(--green); font-size: 1.75rem; font-weight: 800; }
+    .step-no { display: block; margin-bottom: 7px; color: var(--green-dark); font-size: .75rem; font-weight: 800; letter-spacing: .08em; }
+    .flow-step strong { display: block; line-height: 1.35; }
+    .flow-step span { display: block; margin-top: 4px; color: var(--muted); font-size: .85rem; line-height: 1.4; }
+    .wireframe { display: grid; grid-template-columns: 1.4fr .9fr; gap: 0; overflow: hidden; margin-top: 22px; border: 1px solid #254437; border-radius: 20px; background: #202b27; color: #f4fbf7; box-shadow: var(--shadow); }
+    .mock-widget { min-height: 286px; padding: 24px; border-right: 1px solid #3f544a; }
+    .mock-label { margin: 0; color: #aabbb3; font-size: .75rem; font-weight: 800; letter-spacing: .1em; }
+    .switch { display: inline-flex; float: right; gap: 2px; padding: 3px; border-radius: 8px; background: #16211d; font-size: .77rem; font-weight: 800; }
+    .switch span { padding: 4px 8px; border-radius: 5px; color: #7f9389; }
+    .switch .on { color: #062a18; background: #00c86a; }
+    .mock-title { clear: both; padding-top: 22px; font-size: 1.6rem; font-weight: 750; }
+    .mock-lines { display: grid; gap: 9px; margin: 17px 0; }
+    .mock-line { height: 10px; border-radius: 99px; background: #405148; }
+    .mock-line:nth-child(2) { width: 75%; } .mock-line:nth-child(3) { width: 51%; }
+    .mock-button { padding: 12px; border-radius: 9px; background: #00bd62; color: #052817; font-weight: 850; text-align: center; }
+    .mock-panel { padding: 28px 23px; background: #16211d; }
+    .mode-list { display: grid; gap: 11px; margin: 14px 0 0; }
+    .mode-list div { padding: 10px 12px; border-left: 3px solid #00c86a; border-radius: 0 8px 8px 0; background: #263530; font-size: .86rem; }
+    .notice { margin-top: 22px; padding: 16px 18px; border-radius: 13px; }
+    .notice strong { display: block; margin-bottom: 3px; }
+    .notice.warning { border: 1px solid #f2d98b; background: var(--amber); color: var(--amber-ink); }
+    .notice.danger { border: 1px solid #ffc9c4; background: var(--red); color: var(--red-ink); }
+    table { width: 100%; margin-top: 20px; border-spacing: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: white; }
+    th, td { padding: 13px 15px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #edf5f0; font-size: .85rem; }
+    tr:last-child td { border-bottom: 0; }
+    code { padding: .1em .38em; border-radius: 5px; background: #e9f0ec; color: #0c6040; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
+    ul { margin: 9px 0; padding-left: 1.3em; }
+    .checklist { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 23px; }
+    .check { padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: white; }
+    .check::before { content: "✓"; display: inline-grid; width: 21px; height: 21px; place-items: center; margin-right: 8px; border-radius: 50%; background: var(--mint); color: var(--green-dark); font-weight: 900; }
+    footer { padding: 32px 0 44px; color: var(--muted); border-top: 1px solid var(--line); font-size: .88rem; }
+    @media (max-width: 760px) {
+      .wrap { width: min(100% - 28px, 1120px); }
+      .hero { padding: 48px 14px 38px; }
+      main { padding-top: 34px; }
+      section { margin-bottom: 52px; }
+      .grid, .checklist, .wireframe { grid-template-columns: 1fr; }
+      .mock-widget { border-right: 0; border-bottom: 1px solid #3f544a; }
+      .flow { grid-template-columns: 1fr 1fr; }
+      .flow-step:nth-child(2)::after { display: none; }
+      .flow-step::after { transform: rotate(90deg); right: -14px !important; top: 42% !important; }
+      th, td { padding: 11px; font-size: .9rem; }
+    }
+    @media print { .nav { display: none; } .hero { padding: 35px 0; } body { background: white; } .card, .flow-step { box-shadow: none; } }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <p class="eyebrow">Figma workflow guide · 2026/08/27</p>
+      <h1>Design Checklist<br>× Lokalise</h1>
+      <p class="lead">在 Figma 完成 checklist、同步 All UI、管理 Lokalise key 與產出多語系行銷畫面的一套工作流程。</p>
+      <div class="badges"><span class="badge">Widget</span><span class="badge">Lokalise Plugin</span><span class="badge">Main / Branch</span></div>
+    </div>
+  </header>
+
+  <nav class="nav"><div class="wrap">
+    <a href="#overview">功能總覽</a><a href="#setup">首次設定</a><a href="#main">Main 操作</a><a href="#branch">Branch 多語系</a><a href="#help">注意事項</a>
+  </div></nav>
+
+  <main class="wrap">
+    <section id="overview">
+      <h2>功能總覽</h2>
+      <p class="section-note">Widget 負責畫布上的同步工作；Lokalise 面板負責文字、翻譯與截圖。兩個入口共用 Figma 的 key 資料。</p>
+      <div class="grid">
+        <article class="card"><div class="icon">☑</div><h3>Widget</h3><p>管理 checklist、同步目前 Page 的 <code>*_Main</code> frames 到 All UI，並在 Branch 模式建立各語系 UI。</p></article>
+        <article class="card"><div class="icon">↔</div><h3>Lokalise 面板</h3><p>把 Figma text 連到 key、上傳原文與標註截圖，或把 Lokalise 翻譯拉回 Figma。</p></article>
+      </div>
+    </section>
+
+    <section id="setup">
+      <h2>首次設定</h2>
+      <p class="section-note">請在 Figma Development 區分別匯入 Widget 與獨立 Plugin；Lokalise 面板可從任一入口開啟。</p>
+      <div class="flow">
+        <div class="flow-step"><b class="step-no">01</b><strong>匯入 Widget</strong><span>選擇 <code>manifest.json</code></span></div>
+        <div class="flow-step"><b class="step-no">02</b><strong>匯入 Plugin</strong><span>選擇 <code>lokalise-plugin/manifest.json</code></span></div>
+        <div class="flow-step"><b class="step-no">03</b><strong>開啟 Settings</strong><span>在 Lokalise 面板輸入設定</span></div>
+        <div class="flow-step"><b class="step-no">04</b><strong>測試連線</strong><span>確認可讀取 key／翻譯</span></div>
+      </div>
+      <p>請完整填寫以下設定，才能使用 key、翻譯、截圖、comment 預填與 Branch 多語系流程。</p>
+      <table><thead><tr><th>欄位</th><th>說明</th></tr></thead><tbody>
+        <tr><td>Lokalise API Token</td><td>在 Lokalise 建立的 API Token，供讀寫 key、翻譯與截圖。</td></tr>
+        <tr><td>Lokalise Project ID</td><td>要操作的 <b>Lokalise 後台專案</b> Project ID；請從該專案資訊複製。</td></tr>
+        <tr><td>Base language</td><td>上傳原文所使用的 Lokalise 語言代碼，通常為 <code>en</code>。</td></tr>
+        <tr><td>Platform</td><td>選擇 Android 或 iOS，決定 Branch 多語系輸出的語系數量。</td></tr>
+        <tr><td>CORS Proxy URL</td><td>Figma Desktop 面板連線 Lokalise 必填。請直接填入 <code>https://lokalise-plugin.verna-gong.workers.dev</code>。</td></tr>
+        <tr><td>Figma Personal Access Token（PAT）</td><td>供讀取 Figma comments 作為 key 建議。到 Figma 檔案瀏覽頁左上帳號選單 → <b>Settings</b> → <b>Security</b> → <b>Personal access tokens</b> 建立並立即複製；token 僅會顯示一次。<a href="https://help.figma.com/hc/en-us/articles/8085703771159-Manage-personal-access-tokens" target="_blank" rel="noreferrer">查看 Figma 說明</a></td></tr>
+        <tr><td>Figma File Key</td><td>開啟目前 Figma 檔案並複製檔案連結；網址中 <code>/design/&lt;File Key&gt;/</code>（或舊網址 <code>/file/&lt;File Key&gt;/</code>）之間的字串就是 File Key。也可直接貼完整 Figma 檔案網址。<a href="https://help.figma.com/hc/en-us/articles/1500005554982-Guide-to-files-and-folders" target="_blank" rel="noreferrer">查看 Figma 說明</a></td></tr>
+      </tbody></table>
+      <div class="notice warning"><strong>Branch 的設定空白？</strong>可到 Settings 使用「Import settings from main file」。Branch 本身仍要有可用 Figma PAT 才能讀取 main file 的設定。</div>
+    </section>
+
+    <section id="main">
+      <h2>Main file：日常操作</h2>
+      <div class="wireframe" aria-label="Widget Main 與 Branch 模式示意">
+        <div class="mock-widget"><p class="mock-label">WIDGET · MAIN</p><div class="switch"><span class="on">Main</span><span>Branch</span></div><div class="mock-title">Card Title</div><div class="mock-lines"><div class="mock-line"></div><div class="mock-line"></div><div class="mock-line"></div></div><div class="mock-button">Sync to All UI</div></div>
+        <div class="mock-panel"><p class="mock-label">MAIN MODE</p><div class="mode-list"><div>✓ Checklist</div><div>✓ Sync to All UI</div><div>✓ Lokalise</div></div></div>
+      </div>
+
+      <h3>同步到 All UI</h3>
+      <div class="flow">
+        <div class="flow-step"><b class="step-no">01</b><strong>前往來源 Page</strong><span>確認要同步的 frame 位於目前 Page</span></div>
+        <div class="flow-step"><b class="step-no">02</b><strong>完成 checklist</strong><span>未完成項目會阻擋同步</span></div>
+        <div class="flow-step"><b class="step-no">03</b><strong>按 Sync to All UI</strong><span>同步目前 Page 的來源 frames</span></div>
+        <div class="flow-step"><b class="step-no">04</b><strong>檢查 All UI</strong><span>確認 Section、文案、文字變數與版面</span></div>
+      </div>
+      <ul><li>只同步目前 Page、名稱結尾為 <code>_Main</code> 的 frame。</li><li>建議命名：<code>{Project}_{Page}_{Status}_Main</code>；不符合格式的項目會放到 <code>Misc</code>。</li><li>重新同步會用來源內容更新對應 All UI frame，請不要把唯一版本的手動修改只留在 All UI。</li></ul>
+
+      <h3>指派 key、Export 與 Import</h3>
+      <div class="flow">
+        <div class="flow-step"><b class="step-no">01</b><strong>選取文字</strong><span>選取一或多個 text layer</span></div>
+        <div class="flow-step"><b class="step-no">02</b><strong>Key Setup</strong><span>輸入、搜尋或採用 comment 建議</span></div>
+        <div class="flow-step"><b class="step-no">03</b><strong>Assign / Export</strong><span>存 key，或連同原文與截圖上傳</span></div>
+        <div class="flow-step"><b class="step-no">04</b><strong>Import</strong><span>選語言後 Preview／Pull 翻譯</span></div>
+      </div>
+      <div class="grid">
+        <article class="card"><h3>Assign 與 Assign &amp; Export</h3><ul><li><b>Assign</b>：只儲存 key 到 Figma。</li><li><b>Assign &amp; Export</b>：以目前畫面中的 key 值直接上傳。</li><li><b>Char limit（String 字元限制）</b>：在每個 key 的 Char limit 填入最大字數；Assign 會存到 Figma，Export 時會同步到 Lokalise。留白代表不設定限制。</li><li><b>截圖</b>：若要把標記截圖上傳到 Lokalise，務必開啟 <code>Update screenshots</code>。每個 key 會取得一張完整 UI 圖，且只以唯一藍框標出該 key 的文字位置。</li><li>Comment 顯示的是建議，不等於已儲存；仍須 Assign。</li></ul></article>
+        <article class="card"><h3>Import 翻譯</h3><ul><li>建議先用 Preview 檢查大量改動。</li><li>目前請以整個 Page 的 Pull 為準；選取範圍與還原選項的限制見下方「目前不要依賴的選項」。</li></ul></article>
+      </div>
+      <div class="notice danger"><strong>同一次 Export 不可重複 key</strong>若兩個選取文字圖層使用同一 key，工具會停止上傳。請先回到 Key Setup，讓每個需要截圖的文字使用不同 key。</div>
+    </section>
+
+    <section id="branch">
+      <h2>Branch：多語系 UI</h2>
+      <p class="section-note"><b>Branch mode 只能在 Figma branch file 使用。</b>在 branch 的來源 Page，直接把 Widget 右上切到 Branch。舊版 Settings 勾選流程已不再使用。</p>
+      <div class="wireframe">
+        <div class="mock-widget"><p class="mock-label">WIDGET · BRANCH</p><div class="switch"><span>Main</span><span class="on">Branch</span></div><div class="mock-title">Branch file</div><div class="mock-lines"><div></div><div style="width:67%"></div></div><div class="mock-button">Sync Multiple UI</div></div>
+        <div class="mock-panel"><p class="mock-label">BRANCH MODE</p><div class="mode-list"><div>✓ Updated List</div><div>✓ Sync Multiple UI</div><div>✓ Lokalise</div></div></div>
+      </div>
+      <div class="flow">
+        <div class="flow-step"><b class="step-no">01</b><strong>Update branch</strong><span>先用 Figma 原生功能取得 main 最新內容</span></div>
+        <div class="flow-step"><b class="step-no">02</b><strong>切換 Branch</strong><span>確認 Settings 的 Platform 正確</span></div>
+        <div class="flow-step"><b class="step-no">03</b><strong>Sync Multiple UI</strong><span>依序 clone、拉翻譯、套字型</span></div>
+        <div class="flow-step"><b class="step-no">04</b><strong>人工檢查</strong><span>檢查語句、換行、字型與 Updated List 日期紀錄</span></div>
+      </div>
+      <table><thead><tr><th>Platform</th><th>會產出的 All UI pages</th></tr></thead><tbody>
+        <tr><td>Android</td><td>EN、TW、TH、JP、PH</td></tr>
+        <tr><td>iOS</td><td>EN、TW、TH、JP</td></tr>
+      </tbody></table>
+      <div class="notice warning"><strong>Branch Sync 注意事項</strong>只能在 Figma branch file 中使用，且只處理目前 Page 的 <code>*_Main</code> frames。每次 Sync 成功後，Widget 的 Updated List 會自動記錄更新日期（<code>YYYY/mm/dd</code>）。TH／TW／JP 會套用對應 Noto Sans 字型；重跑可能覆蓋這些語系頁面的手動字型調整。按鈕顯示 <code>Syncing…</code> 時，請不要重複點擊或關閉 Figma。</div>
+    </section>
+
+    <section id="help">
+      <h2>注意事項與排查</h2>
+      <table><thead><tr><th>情況</th><th>先檢查什麼？</th></tr></thead><tbody>
+        <tr><td>Plugin 無法連線／Failed to fetch</td><td>確認 Lokalise Token、Project ID、CORS Proxy URL；Figma Desktop 的面板需要 proxy。</td></tr>
+        <tr><td>Comment pre-fill 顯示 Token expired</td><td>在 Settings 建立並填入新的 Figma PAT。</td></tr>
+        <tr><td>Export 被重複 key 保護擋下</td><td>Key Setup 中有兩個選取文字使用相同 key；請修改其中一個。</td></tr>
+        <tr><td>Branch 沒有 JP／PH</td><td>確認 Platform 是 Android；iOS 設計上只有四語系。</td></tr>
+        <tr><td>翻譯套了但顯示異常</td><td>檢查 TH／TW／JP 的字型與字重；必要時人工調整。</td></tr>
+      </tbody></table>
+      <h3>目前不要依賴的選項</h3>
+      <div class="checklist"><div class="check">Key pattern / Key case 的自動產生 key</div><div class="check">Include hidden layers</div><div class="check">Auto-link existing translations</div><div class="check"><b>Import selected keys only</b>：只限制抓取哪些 key；同 key 的其他文字仍可能一起更新，不是嚴格的「只更新所選文字」。</div><div class="check"><b>Import selected frames only</b>：直接套用雖會限在所選 frame，但自動連結可能影響同頁其他未指派文字。</div><div class="check"><b>Restore original text</b>：只在同次開啟面板期間保存，且以 key 而非文字節點記錄；重複使用 key 時不保證能還原正確原文。</div></div>
+      <h3>建議團隊流程</h3>
+      <div class="flow">
+        <div class="flow-step"><b class="step-no">01</b><strong>完成 Main UI</strong><span>命名好來源 <code>*_Main</code> frames</span></div>
+        <div class="flow-step"><b class="step-no">02</b><strong>Export 到 Lokalise</strong><span>指派 key、上傳原文與截圖</span></div>
+        <div class="flow-step"><b class="step-no">03</b><strong>翻譯完成</strong><span>Pull 回 Main 或 Branch</span></div>
+        <div class="flow-step"><b class="step-no">04</b><strong>多語系檢查</strong><span>確認換行、字型與截圖</span></div>
+      </div>
+    </section>
+  </main>
+  <footer><div class="wrap">Design Checklist × Lokalise · 使用前請確認 Figma 與 Lokalise 權限、設定和翻譯內容皆為最新。</div></footer>
+</body>
+</html>

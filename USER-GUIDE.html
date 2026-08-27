@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Design Checklist × Lokalise Figma Widget 與 Plugin 使用手冊">
+  <meta name="description" content="Design Checklist × Lokalise Checklist Widget 與 Whoscall x Lokalise Plugin 使用手冊">
   <title>Design Checklist × Lokalise 使用手冊</title>
   <style>
     :root {
@@ -113,7 +113,7 @@
       <p class="eyebrow">Figma workflow guide · 2026/08/27</p>
       <h1>Design Checklist<br>× Lokalise</h1>
       <p class="lead">在 Figma 完成 checklist、同步 All UI、管理 Lokalise key 與產出多語系行銷畫面的一套工作流程。</p>
-      <div class="badges"><span class="badge">Widget</span><span class="badge">Lokalise Plugin</span><span class="badge">Main / Branch</span></div>
+      <div class="badges"><span class="badge">Checklist Widget</span><span class="badge">Whoscall x Lokalise Plugin</span><span class="badge">Main / Branch</span></div>
     </div>
   </header>
 
@@ -124,20 +124,20 @@
   <main class="wrap">
     <section id="overview">
       <h2>功能總覽</h2>
-      <p class="section-note">Widget 負責畫布上的同步工作；Lokalise 面板負責文字、翻譯與截圖。兩個入口共用 Figma 的 key 資料。</p>
+      <p class="section-note">Checklist Widget 負責畫布上的同步工作；Whoscall x Lokalise Plugin 負責文字、翻譯與截圖。兩個入口共用 Figma 的 key 資料。</p>
       <div class="grid">
-        <article class="card"><div class="icon">☑</div><h3>Widget</h3><p>管理 checklist、同步目前 Page 的 <code>*_Main</code> frames 到 All UI，並在 Branch 模式建立各語系 UI。</p></article>
-        <article class="card"><div class="icon">↔</div><h3>Lokalise 面板</h3><p>把 Figma text 連到 key、上傳原文與標註截圖，或把 Lokalise 翻譯拉回 Figma。</p></article>
+        <article class="card"><div class="icon">☑</div><h3>Checklist Widget</h3><p>管理 checklist、同步目前 Page 的 <code>*_Main</code> frames 到 All UI，並在 Branch 模式建立各語系 UI。</p></article>
+        <article class="card"><div class="icon">↔</div><h3>Whoscall x Lokalise Plugin</h3><p>把 Figma text 連到 key、上傳原文與標註截圖，或把 Lokalise 翻譯拉回 Figma。</p></article>
       </div>
     </section>
 
     <section id="setup">
       <h2>首次設定</h2>
-      <p class="section-note">請在 Figma Development 區分別匯入 Widget 與獨立 Plugin；Lokalise 面板可從任一入口開啟。</p>
+      <p class="section-note">請在 Figma Development 區分別匯入 Checklist Widget 與 Whoscall x Lokalise Plugin；Whoscall x Lokalise Plugin 可從任一入口開啟。</p>
       <div class="flow">
-        <div class="flow-step"><b class="step-no">01</b><strong>匯入 Widget</strong><span>選擇 <code>manifest.json</code></span></div>
+        <div class="flow-step"><b class="step-no">01</b><strong>匯入 Checklist Widget</strong><span>選擇 <code>manifest.json</code></span></div>
         <div class="flow-step"><b class="step-no">02</b><strong>匯入 Plugin</strong><span>選擇 <code>lokalise-plugin/manifest.json</code></span></div>
-        <div class="flow-step"><b class="step-no">03</b><strong>開啟 Settings</strong><span>在 Lokalise 面板輸入設定</span></div>
+        <div class="flow-step"><b class="step-no">03</b><strong>開啟 Settings</strong><span>在 Whoscall x Lokalise Plugin 輸入設定</span></div>
         <div class="flow-step"><b class="step-no">04</b><strong>測試連線</strong><span>確認可讀取 key／翻譯</span></div>
       </div>
       <p>請完整填寫以下設定，才能使用 key、翻譯、截圖、comment 預填與 Branch 多語系流程。</p>
@@ -155,7 +155,7 @@
 
     <section id="main">
       <h2>Main file：日常操作</h2>
-      <div class="wireframe" aria-label="Widget Main 與 Branch 模式示意">
+      <div class="wireframe" aria-label="Checklist Widget Main 與 Branch 模式示意">
         <div class="mock-widget"><p class="mock-label">WIDGET · MAIN</p><div class="switch"><span class="on">Main</span><span>Branch</span></div><div class="mock-title">Card Title</div><div class="mock-lines"><div class="mock-line"></div><div class="mock-line"></div><div class="mock-line"></div></div><div class="mock-button">Sync to All UI</div></div>
         <div class="mock-panel"><p class="mock-label">MAIN MODE</p><div class="mode-list"><div>✓ Checklist</div><div>✓ Sync to All UI</div><div>✓ Lokalise</div></div></div>
       </div>
@@ -185,7 +185,7 @@
 
     <section id="branch">
       <h2>Branch：多語系 UI</h2>
-      <p class="section-note"><b>Branch mode 只能在 Figma branch file 使用。</b>在 branch 的來源 Page，直接把 Widget 右上切到 Branch。舊版 Settings 勾選流程已不再使用。</p>
+      <p class="section-note"><b>Branch mode 只能在 Figma branch file 使用。</b>在 branch 的來源 Page，直接把 Checklist Widget 右上切到 Branch。舊版 Settings 勾選流程已不再使用。</p>
       <div class="wireframe">
         <div class="mock-widget"><p class="mock-label">WIDGET · BRANCH</p><div class="switch"><span>Main</span><span class="on">Branch</span></div><div class="mock-title">Branch file</div><div class="mock-lines"><div></div><div style="width:67%"></div></div><div class="mock-button">Sync Multiple UI</div></div>
         <div class="mock-panel"><p class="mock-label">BRANCH MODE</p><div class="mode-list"><div>✓ Updated List</div><div>✓ Sync Multiple UI</div><div>✓ Lokalise</div></div></div>
@@ -200,7 +200,7 @@
         <tr><td>Android</td><td>EN、TW、TH、JP、PH</td></tr>
         <tr><td>iOS</td><td>EN、TW、TH、JP</td></tr>
       </tbody></table>
-      <div class="notice warning"><strong>Branch Sync 注意事項</strong>只能在 Figma branch file 中使用，且只處理目前 Page 的 <code>*_Main</code> frames。每次 Sync 成功後，Widget 的 Updated List 會自動記錄更新日期（<code>YYYY/mm/dd</code>）。TH／TW／JP 會套用對應 Noto Sans 字型；重跑可能覆蓋這些語系頁面的手動字型調整。按鈕顯示 <code>Syncing…</code> 時，請不要重複點擊或關閉 Figma。</div>
+      <div class="notice warning"><strong>Branch Sync 注意事項</strong>只能在 Figma branch file 中使用，且只處理目前 Page 的 <code>*_Main</code> frames。每次 Sync 成功後，Checklist Widget 的 Updated List 會自動記錄更新日期（<code>YYYY/mm/dd</code>）。TH／TW／JP 會套用對應 Noto Sans 字型；重跑可能覆蓋這些語系頁面的手動字型調整。按鈕顯示 <code>Syncing…</code> 時，請不要重複點擊或關閉 Figma。</div>
     </section>
 
     <section id="help">

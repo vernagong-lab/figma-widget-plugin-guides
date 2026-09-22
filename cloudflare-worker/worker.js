@@ -43,6 +43,42 @@ function requireSchedulerToken(req, env) {
   return !!env.SYNC_API_TOKEN && req.headers.get('Authorization') === 'Bearer ' + env.SYNC_API_TOKEN;
 }
 
+async function fetchFigmaRootSharedData(fileKey, env) {
+  if (!env.FIGMA_API_TOKEN) return { error: 'FIGMA_API_TOKEN is not configured on this Worker.' };
+  const response = await fetch(
+    'https://api.figma.com/v1/files/' + encodeURIComponent(fileKey) + '?plugin_data=shared&depth=1',
+    { headers: { 'X-Figma-Token': env.FIGMA_API_TOKEN } },
+  );
+  if (!response.ok) return { error: 'Figma API returned ' + response.status + ' for this file.' };
+  const payload = await response.json();
+  return { shared: payload?.document?.sharedPluginData?.lok || {} };
+}
+
+async function handleBranchMarkerValidation(req, url, env) {
+  if (req.method !== 'GET') return json({ error: 'Method not allowed.' }, 405);
+  if (!requireSchedulerToken(req, env)) return json({ error: 'Unauthorized scheduler request.' }, 401);
+  const mainFileKey = url.searchParams.get('mainFileKey') || '';
+  const branchFileKey = url.searchParams.get('branchFileKey') || '';
+  if (!mainFileKey || !branchFileKey) return json({ error: 'mainFileKey and branchFileKey are required.' }, 400);
+
+  const [main, branch] = await Promise.all([
+    fetchFigmaRootSharedData(mainFileKey, env),
+    fetchFigmaRootSharedData(branchFileKey, env),
+  ]);
+  if (main.error || branch.error) return json({ error: main.error || branch.error }, 502);
+
+  const markerKey = 'lokMainAllUiSyncRevision';
+  const mainRevision = main.shared[markerKey] || null;
+  const branchRevision = branch.shared[markerKey] || null;
+  const matches = !!mainRevision && mainRevision === branchRevision;
+  return json({
+    mainRevision,
+    branchRevision,
+    matches,
+    result: !mainRevision ? 'main-marker-missing' : matches ? 'propagated' : 'awaiting-update',
+  });
+}
+
 async function handleAutomation(req, url, env) {
   const kv = getSyncJobsBinding(env);
   if (!kv) return json({ error: 'SYNC_JOBS KV binding is not configured.' }, 503);
@@ -106,6 +142,7 @@ async function handleAutomation(req, url, env) {
 async function handle(req, env) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const url = new URL(req.url);
+  if (url.pathname === '/validate-branch-marker') return handleBranchMarkerValidation(req, url, env);
   if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync') return handleAutomation(req, url, env);
 
   const target = 'https://api.lokalise.com' + url.pathname + url.search;

@@ -1,0 +1,12 @@
+name = "lokalise-plugin"
+main = "cloudflare-worker/worker.js"
+compatibility_date = "2026-09-22"
+
+# Keep the SYNC_API_TOKEN secret configured in the Cloudflare dashboard when
+# Git-based deployments create a new Worker version.
+keep_vars = true
+
+# Cloudflare Workers Builds provisions this binding on the first deployment.
+# Its generated namespace is then the deployment source of truth.
+[[kv_namespaces]]
+binding = "SYNC_JOBS"

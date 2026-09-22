@@ -10,13 +10,11 @@ const CORS = {
 const LEASE_MS = 20 * 60 * 1000;
 const HISTORY_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-addEventListener('fetch', event => event.respondWith(handle(event.request)));
-
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
 }
-function getSyncJobsBinding() {
-  return typeof SYNC_JOBS === 'undefined' ? null : SYNC_JOBS;
+function getSyncJobsBinding(env) {
+  return env.SYNC_JOBS || null;
 }
 function jobKey(target) {
   const pageRef = target.pageId || ('name:' + target.pageName);
@@ -41,13 +39,12 @@ async function getJob(kv, target) {
   }
   return raw;
 }
-function requireSchedulerToken(req) {
-  return typeof SYNC_API_TOKEN !== 'undefined' && !!SYNC_API_TOKEN &&
-    req.headers.get('Authorization') === 'Bearer ' + SYNC_API_TOKEN;
+function requireSchedulerToken(req, env) {
+  return !!env.SYNC_API_TOKEN && req.headers.get('Authorization') === 'Bearer ' + env.SYNC_API_TOKEN;
 }
 
-async function handleAutomation(req, url) {
-  const kv = getSyncJobsBinding();
+async function handleAutomation(req, url, env) {
+  const kv = getSyncJobsBinding(env);
   if (!kv) return json({ error: 'SYNC_JOBS KV binding is not configured.' }, 503);
 
   if (url.pathname === '/sync-status' && req.method === 'GET') {
@@ -69,7 +66,7 @@ async function handleAutomation(req, url) {
   const key = jobKey(target);
 
   if (url.pathname === '/request-sync' && req.method === 'POST') {
-    if (!requireSchedulerToken(req)) return json({ error: 'Unauthorized scheduler request.' }, 401);
+    if (!requireSchedulerToken(req, env)) return json({ error: 'Unauthorized scheduler request.' }, 401);
     const existing = await getJob(kv, target);
     const job = {
       id: existing?.id || crypto.randomUUID(), ...target, state: 'pending',
@@ -106,10 +103,10 @@ async function handleAutomation(req, url) {
   return json({ error: 'Automation endpoint not found.' }, 404);
 }
 
-async function handle(req) {
+async function handle(req, env) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const url = new URL(req.url);
-  if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync') return handleAutomation(req, url);
+  if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync') return handleAutomation(req, url, env);
 
   const target = 'https://api.lokalise.com' + url.pathname + url.search;
   const headers = {};
@@ -118,3 +115,9 @@ async function handle(req) {
   const res = await fetch(target, { method: req.method, headers, body });
   return new Response(await res.arrayBuffer(), { status: res.status, headers: { 'Content-Type': 'application/json', ...CORS } });
 }
+
+export default {
+  fetch(request, env) {
+    return handle(request, env);
+  },
+};

@@ -12,6 +12,8 @@ const HISTORY_TTL_SECONDS = 30 * 24 * 60 * 60;
 const MERGE_TARGET_INDEX_KEY = 'merge-target-index:v1';
 const MERGE_TARGET_PREFIX = 'merge-target:v1:';
 const MARKER_KEY = 'lokMainAllUiSyncRevision';
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const SCAN_BATCH_SIZE = 4;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
@@ -47,6 +49,9 @@ function requireSchedulerToken(req, env) {
 }
 function validFileKey(value) {
   return typeof value === 'string' && /^[A-Za-z0-9_-]{6,128}$/.test(value);
+}
+function validFolderId(value) {
+  return typeof value === 'string' && /^\d{6,32}$/.test(value);
 }
 function mergeTargetKey(branchFileKey) {
   return MERGE_TARGET_PREFIX + branchFileKey;
@@ -101,7 +106,22 @@ async function fetchFigmaRootSharedData(fileKey, env) {
   );
   if (!response.ok) return { error: 'Figma API returned ' + response.status + ' for this file.' };
   const payload = await response.json();
-  return { shared: payload?.document?.sharedPluginData?.lok || {} };
+  return {
+    shared: payload?.document?.sharedPluginData?.lok || {},
+    pages: Array.isArray(payload?.document?.children) ? payload.document.children.map((page) => page?.name).filter(Boolean) : [],
+  };
+}
+
+async function fetchFigmaFolderFiles(folderId, env) {
+  if (!env.FIGMA_API_TOKEN) return { error: 'FIGMA_API_TOKEN is not configured on this Worker.' };
+  const headers = { 'X-Figma-Token': env.FIGMA_API_TOKEN };
+  // v2 is the current Figma folders API. Keep v1 as a compatibility fallback
+  // for tokens created before folders:read became available.
+  let response = await fetch(`https://api.figma.com/v2/folders/${encodeURIComponent(folderId)}/files?branch_data=true`, { headers });
+  if (response.status === 404) response = await fetch(`https://api.figma.com/v1/projects/${encodeURIComponent(folderId)}/files?branch_data=true`, { headers });
+  if (!response.ok) return { error: `Figma API returned ${response.status} while listing this folder.` };
+  const payload = await response.json();
+  return { files: Array.isArray(payload?.files) ? payload.files : [] };
 }
 
 async function handleBranchMarkerValidation(req, url, env) {
@@ -158,6 +178,12 @@ async function scanMergeTarget(kv, target, env) {
     target.status = 'unavailable';
     target.error = main.error || branch.error;
   } else {
+    if (!branch.pages.includes(target.pageName || 'All UI')) {
+      target.status = 'unavailable';
+      target.error = `Branch file does not contain the ${target.pageName || 'All UI'} Page.`;
+      target.mainRevision = main.shared[MARKER_KEY] || null;
+      target.branchRevision = branch.shared[MARKER_KEY] || null;
+    } else {
     target.mainRevision = main.shared[MARKER_KEY] || null;
     target.branchRevision = branch.shared[MARKER_KEY] || null;
     delete target.error;
@@ -167,12 +193,42 @@ async function scanMergeTarget(kv, target, env) {
     if (target.status === 'up-to-date' && target.autoSync === true && target.lastQueuedRevision !== target.branchRevision) {
       if (await queueMergeSync(kv, target, target.branchRevision)) target.lastQueuedRevision = target.branchRevision;
     }
+    }
   }
   if (target.status !== previousStatus) {
     target.lastStatusChangedAt = now;
     // A scan may continue even when Slack is temporarily unavailable; the
     // persisted status remains the source of truth for a later dashboard.
-    await notifySlackOfMergeChange(target, env);
+    if (!(previousStatus === 'not-scanned' && target.suppressInitialNotification === true && target.status !== 'unavailable')) {
+      await notifySlackOfMergeChange(target, env);
+    }
+  }
+  target.suppressInitialNotification = false;
+  target.nextScanAt = new Date(Date.now() + (target.status === 'unavailable' ? 60 * 60 * 1000 : WEEK_MS)).toISOString();
+  await saveMergeTarget(kv, target);
+  return target;
+}
+
+async function upsertMergeTarget(kv, body, options = {}) {
+  const existing = await kv.get(mergeTargetKey(body.branchFileKey), 'json');
+  const target = {
+    ...existing,
+    mainFileKey: body.mainFileKey,
+    branchFileKey: body.branchFileKey,
+    pageId: body.pageId || existing?.pageId || '',
+    pageName: body.pageName || existing?.pageName || 'All UI',
+    label: typeof body.label === 'string' ? body.label.slice(0, 160) : (existing?.label || ''),
+    notificationTarget: typeof body.notificationTarget === 'string' ? body.notificationTarget.slice(0, 160) : (existing?.notificationTarget || ''),
+    autoSync: body.autoSync !== false,
+    createdAt: existing?.createdAt || new Date().toISOString(),
+    status: existing?.status || 'not-scanned',
+    suppressInitialNotification: options.suppressInitialNotification === true && !existing,
+    nextScanAt: existing?.nextScanAt || new Date().toISOString(),
+  };
+  const index = await getMergeTargetIndex(kv);
+  if (!index.includes(target.branchFileKey)) {
+    index.push(target.branchFileKey);
+    await kv.put(MERGE_TARGET_INDEX_KEY, JSON.stringify(index));
   }
   await saveMergeTarget(kv, target);
   return target;
@@ -208,27 +264,38 @@ async function handleMergeTargets(req, url, env) {
     if (body.pageId !== undefined && typeof body.pageId !== 'string') return json({ error: 'pageId must be a string.' }, 400);
     if (body.pageName !== undefined && typeof body.pageName !== 'string') return json({ error: 'pageName must be a string.' }, 400);
     if (body.notificationTarget !== undefined && typeof body.notificationTarget !== 'string') return json({ error: 'notificationTarget must be a string.' }, 400);
-    const existing = await kv.get(mergeTargetKey(body.branchFileKey), 'json');
-    const target = {
-      ...existing,
-      mainFileKey: body.mainFileKey,
-      branchFileKey: body.branchFileKey,
-      pageId: body.pageId || existing?.pageId || '',
-      pageName: body.pageName || existing?.pageName || 'All UI',
-      label: typeof body.label === 'string' ? body.label.slice(0, 160) : (existing?.label || ''),
-      notificationTarget: typeof body.notificationTarget === 'string' ? body.notificationTarget.slice(0, 160) : (existing?.notificationTarget || ''),
-      autoSync: body.autoSync !== false,
-      createdAt: existing?.createdAt || new Date().toISOString(),
-      status: existing?.status || 'not-scanned',
-    };
-    const index = await getMergeTargetIndex(kv);
-    if (!index.includes(target.branchFileKey)) {
-      index.push(target.branchFileKey);
-      await kv.put(MERGE_TARGET_INDEX_KEY, JSON.stringify(index));
-    }
-    await saveMergeTarget(kv, target);
+    const target = await upsertMergeTarget(kv, body);
     await scanMergeTarget(kv, target, env);
     return json({ registered: true, target });
+  }
+  if (url.pathname === '/import-folder-targets' && req.method === 'POST') {
+    const body = await readBody(req);
+    const folderId = body?.folderId || '';
+    if (!validFolderId(folderId)) return json({ error: 'A valid folderId is required.' }, 400);
+    const listing = await fetchFigmaFolderFiles(folderId, env);
+    if (listing.error) return json({ error: listing.error }, 502);
+    const pageName = typeof body.pageName === 'string' && body.pageName ? body.pageName : 'All UI';
+    const notificationTarget = typeof body.notificationTarget === 'string' ? body.notificationTarget : '';
+    const platform = typeof body.platform === 'string' ? body.platform.slice(0, 40) : 'Figma';
+    const results = { folderId, discovered: 0, registered: [], noMktBranch: [], multipleMktBranches: [] };
+    for (const file of listing.files.filter((item) => /^\d/.test(item?.name || ''))) {
+      results.discovered += 1;
+      const branches = (Array.isArray(file?.branches) ? file.branches : []).filter((branch) => /MKT/i.test(branch?.name || ''));
+      if (branches.length === 0) { results.noMktBranch.push({ name: file.name, fileKey: file.key }); continue; }
+      if (branches.length > 1) { results.multipleMktBranches.push({ name: file.name, fileKey: file.key, branches: branches.map((branch) => branch.name) }); continue; }
+      const branch = branches[0];
+      if (!validFileKey(file.key) || !validFileKey(branch.key)) continue;
+      const target = await upsertMergeTarget(kv, {
+        mainFileKey: file.key,
+        branchFileKey: branch.key,
+        pageName,
+        label: `${platform} ${file.name} — ${branch.name}`,
+        notificationTarget,
+        autoSync: true,
+      }, { suppressInitialNotification: true });
+      results.registered.push({ name: file.name, mainFileKey: file.key, branchFileKey: branch.key, status: target.status });
+    }
+    return json(results);
   }
   return json({ error: 'Merge-target endpoint not found.' }, 404);
 }
@@ -297,7 +364,7 @@ async function handle(req, env) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const url = new URL(req.url);
   if (url.pathname === '/validate-branch-marker') return handleBranchMarkerValidation(req, url, env);
-  if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target' || url.pathname === '/test-slack-notification') return handleMergeTargets(req, url, env);
+  if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target' || url.pathname === '/import-folder-targets' || url.pathname === '/test-slack-notification') return handleMergeTargets(req, url, env);
   if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync') return handleAutomation(req, url, env);
 
   const target = 'https://api.lokalise.com' + url.pathname + url.search;
@@ -316,11 +383,13 @@ export default {
     const kv = getSyncJobsBinding(env);
     if (!kv) return;
     ctx.waitUntil((async () => {
-      const keys = await getMergeTargetIndex(kv);
-      await Promise.all(keys.map(async (branchFileKey) => {
-        const target = await kv.get(mergeTargetKey(branchFileKey), 'json');
-        if (target) await scanMergeTarget(kv, target, env);
-      }));
+      const now = Date.now();
+      const targets = (await Promise.all((await getMergeTargetIndex(kv)).map((key) => kv.get(mergeTargetKey(key), 'json'))))
+        .filter(Boolean)
+        .filter((target) => !target.nextScanAt || Date.parse(target.nextScanAt) <= now)
+        .sort((a, b) => String(a.nextScanAt || '').localeCompare(String(b.nextScanAt || '')))
+        .slice(0, SCAN_BATCH_SIZE);
+      for (const target of targets) await scanMergeTarget(kv, target, env);
     })());
   },
 };

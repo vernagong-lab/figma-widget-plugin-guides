@@ -12,5 +12,6 @@ keep_vars = true
 binding = "SYNC_JOBS"
 
 [triggers]
-# Cloudflare cron uses UTC: 01:00 Monday = 09:00 Monday in Taipei (UTC+8).
-crons = ["0 1 * * 1"]
+# Dispatcher runs hourly, but each registered file is due only once per week.
+# This spreads Figma API requests across the day and avoids rate-limit bursts.
+crons = ["0 * * * *"]

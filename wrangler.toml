@@ -10,3 +10,6 @@ keep_vars = true
 # Its generated namespace is then the deployment source of truth.
 [[kv_namespaces]]
 binding = "SYNC_JOBS"
+
+[triggers]
+crons = ["*/15 * * * *"]

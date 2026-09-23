@@ -51,12 +51,45 @@ function validFileKey(value) {
 function mergeTargetKey(branchFileKey) {
   return MERGE_TARGET_PREFIX + branchFileKey;
 }
+function mergeStatusLabel(status) {
+  return {
+    'main-sync-required': 'Main sync is required',
+    'update-required': 'Update branch from main is required',
+    'up-to-date': 'Branch is up to date; background sync is queued',
+    'unavailable': 'Scan is unavailable',
+  }[status] || status;
+}
 async function getMergeTargetIndex(kv) {
   const index = await kv.get(MERGE_TARGET_INDEX_KEY, 'json');
   return Array.isArray(index) ? index.filter(validFileKey) : [];
 }
 async function saveMergeTarget(kv, target) {
   await kv.put(mergeTargetKey(target.branchFileKey), JSON.stringify(target));
+}
+async function notifySlackOfMergeChange(target, env) {
+  const channel = target.notificationTarget || env.SLACK_NOTIFY_TARGET;
+  if (!channel || !env.SLACK_BOT_TOKEN) return;
+  const label = target.label || target.branchFileKey;
+  const text = [
+    '*Figma UI sync status changed*',
+    `*${label}*`,
+    `Status: ${mergeStatusLabel(target.status)}`,
+    `Checked: ${target.lastScannedAt}`,
+  ].join('\n');
+  try {
+    const response = await fetch('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json; charset=utf-8' },
+      body: JSON.stringify({ channel, text, unfurl_links: false, unfurl_media: false }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `Slack returned ${response.status}`);
+    target.lastNotificationAt = new Date().toISOString();
+    target.lastNotifiedStatus = target.status;
+    delete target.lastNotificationError;
+  } catch (error) {
+    target.lastNotificationError = String(error?.message || error).slice(0, 500);
+  }
 }
 
 async function fetchFigmaRootSharedData(fileKey, env) {
@@ -134,7 +167,12 @@ async function scanMergeTarget(kv, target, env) {
       if (await queueMergeSync(kv, target, target.branchRevision)) target.lastQueuedRevision = target.branchRevision;
     }
   }
-  if (target.status !== previousStatus) target.lastStatusChangedAt = now;
+  if (target.status !== previousStatus) {
+    target.lastStatusChangedAt = now;
+    // A scan may continue even when Slack is temporarily unavailable; the
+    // persisted status remains the source of truth for a later dashboard.
+    await notifySlackOfMergeChange(target, env);
+  }
   await saveMergeTarget(kv, target);
   return target;
 }
@@ -156,6 +194,7 @@ async function handleMergeTargets(req, url, env) {
     }
     if (body.pageId !== undefined && typeof body.pageId !== 'string') return json({ error: 'pageId must be a string.' }, 400);
     if (body.pageName !== undefined && typeof body.pageName !== 'string') return json({ error: 'pageName must be a string.' }, 400);
+    if (body.notificationTarget !== undefined && typeof body.notificationTarget !== 'string') return json({ error: 'notificationTarget must be a string.' }, 400);
     const existing = await kv.get(mergeTargetKey(body.branchFileKey), 'json');
     const target = {
       ...existing,
@@ -164,6 +203,7 @@ async function handleMergeTargets(req, url, env) {
       pageId: body.pageId || existing?.pageId || '',
       pageName: body.pageName || existing?.pageName || 'All UI',
       label: typeof body.label === 'string' ? body.label.slice(0, 160) : (existing?.label || ''),
+      notificationTarget: typeof body.notificationTarget === 'string' ? body.notificationTarget.slice(0, 160) : (existing?.notificationTarget || ''),
       autoSync: body.autoSync !== false,
       createdAt: existing?.createdAt || new Date().toISOString(),
       status: existing?.status || 'not-scanned',

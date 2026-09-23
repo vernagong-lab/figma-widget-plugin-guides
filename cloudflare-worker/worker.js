@@ -66,12 +66,12 @@ async function getMergeTargetIndex(kv) {
 async function saveMergeTarget(kv, target) {
   await kv.put(mergeTargetKey(target.branchFileKey), JSON.stringify(target));
 }
-async function notifySlackOfMergeChange(target, env) {
+async function notifySlackOfMergeChange(target, env, isTest = false) {
   const channel = target.notificationTarget || env.SLACK_NOTIFY_TARGET;
   if (!channel || !env.SLACK_BOT_TOKEN) return;
   const label = target.label || target.branchFileKey;
   const text = [
-    '*Figma UI sync status changed*',
+    isTest ? '*Figma UI sync notification test*' : '*Figma UI sync status changed*',
     `*${label}*`,
     `Status: ${mergeStatusLabel(target.status)}`,
     `Checked: ${target.lastScannedAt}`,
@@ -187,6 +187,18 @@ async function handleMergeTargets(req, url, env) {
     const targets = await Promise.all((await getMergeTargetIndex(kv)).map((key) => kv.get(mergeTargetKey(key), 'json')));
     return json({ targets: targets.filter(Boolean) });
   }
+  if (url.pathname === '/test-slack-notification' && req.method === 'POST') {
+    const body = await readBody(req);
+    const branchFileKey = body?.branchFileKey || '';
+    if (!validFileKey(branchFileKey)) return json({ error: 'A valid branchFileKey is required.' }, 400);
+    const target = await kv.get(mergeTargetKey(branchFileKey), 'json');
+    if (!target) return json({ error: 'This branch file is not registered.' }, 404);
+    target.lastScannedAt = new Date().toISOString();
+    await notifySlackOfMergeChange(target, env, true);
+    await saveMergeTarget(kv, target);
+    if (target.lastNotificationError) return json({ notified: false, error: target.lastNotificationError }, 502);
+    return json({ notified: true, target: target.label || target.branchFileKey });
+  }
   if (url.pathname === '/register-merge-target' && req.method === 'POST') {
     const body = await readBody(req);
     if (!body || !validFileKey(body.mainFileKey) || !validFileKey(body.branchFileKey)) {
@@ -284,7 +296,7 @@ async function handle(req, env) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const url = new URL(req.url);
   if (url.pathname === '/validate-branch-marker') return handleBranchMarkerValidation(req, url, env);
-  if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target') return handleMergeTargets(req, url, env);
+  if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target' || url.pathname === '/test-slack-notification') return handleMergeTargets(req, url, env);
   if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync') return handleAutomation(req, url, env);
 
   const target = 'https://api.lokalise.com' + url.pathname + url.search;

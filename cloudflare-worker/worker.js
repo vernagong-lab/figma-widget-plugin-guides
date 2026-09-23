@@ -75,6 +75,7 @@ async function notifySlackOfMergeChange(target, env, isTest = false) {
     `*${label}*`,
     `Status: ${mergeStatusLabel(target.status)}`,
     `Checked: ${target.lastScannedAt}`,
+    `<https://www.figma.com/design/${target.branchFileKey}|Open Branch file in Figma>`,
   ].join('\n');
   try {
     const response = await fetch('https://slack.com/api/chat.postMessage', {

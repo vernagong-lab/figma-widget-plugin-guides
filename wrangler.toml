@@ -12,4 +12,5 @@ keep_vars = true
 binding = "SYNC_JOBS"
 
 [triggers]
-crons = ["*/15 * * * *"]
+# Cloudflare cron uses UTC: 01:00 Monday = 09:00 Monday in Taipei (UTC+8).
+crons = ["0 1 * * 1"]

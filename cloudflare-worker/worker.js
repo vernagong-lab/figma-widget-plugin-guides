@@ -14,6 +14,7 @@ const MERGE_TARGET_PREFIX = 'merge-target:v1:';
 const MARKER_KEY = 'lokMainAllUiSyncRevision';
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const SCAN_BATCH_SIZE = 4;
+const MANUAL_RESCAN_DELAY_MS = 8500;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
@@ -119,7 +120,14 @@ async function fetchFigmaRootSharedData(fileKey, env) {
     'https://api.figma.com/v1/files/' + encodeURIComponent(fileKey) + '?plugin_data=shared&depth=1',
     { headers: { 'X-Figma-Token': env.FIGMA_API_TOKEN } },
   );
-  if (!response.ok) return { error: 'Figma API returned ' + response.status + ' for this file.' };
+  if (!response.ok) {
+    const retryAfterSeconds = Number(response.headers.get('Retry-After'));
+    return {
+      error: 'Figma API returned ' + response.status + ' for this file.',
+      rateLimited: response.status === 429,
+      retryAfterMs: Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? retryAfterSeconds * 1000 : 60 * 1000,
+    };
+  }
   const payload = await response.json();
   return {
     shared: payload?.document?.sharedPluginData?.lok || {},
@@ -189,6 +197,12 @@ async function scanMergeTarget(kv, target, env) {
   const now = new Date().toISOString();
   const previousStatus = target.status || 'not-scanned';
   target.lastScannedAt = now;
+  if (main.rateLimited || branch.rateLimited) {
+    target.lastRateLimitedAt = now;
+    target.nextScanAt = new Date(Date.now() + Math.max(main.retryAfterMs || 0, branch.retryAfterMs || 0, 60 * 1000)).toISOString();
+    await saveMergeTarget(kv, target);
+    return { target, shouldNotify: false, deferred: true };
+  }
   if (main.error || branch.error) {
     target.status = 'unavailable';
     target.error = main.error || branch.error;
@@ -218,15 +232,20 @@ async function scanMergeTarget(kv, target, env) {
   target.suppressInitialNotification = false;
   target.nextScanAt = new Date(Date.now() + (target.status === 'unavailable' ? 60 * 60 * 1000 : WEEK_MS)).toISOString();
   await saveMergeTarget(kv, target);
-  return { target, shouldNotify };
+  return { target, shouldNotify, deferred: false };
 }
 
-async function scanMergeTargets(kv, targets, env) {
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function scanMergeTargets(kv, targets, env, delayMs = 0) {
   const scans = [];
-  // Limit concurrent Figma reads while still allowing an operator-requested
-  // full rescan to complete in a reasonable time.
-  for (let index = 0; index < targets.length; index += SCAN_BATCH_SIZE) {
-    scans.push(...await Promise.all(targets.slice(index, index + SCAN_BATCH_SIZE).map((target) => scanMergeTarget(kv, target, env))));
+  // A target needs two Figma reads. Serial scanning avoids creating a burst
+  // large enough to turn valid files into false `unavailable` statuses.
+  for (let index = 0; index < targets.length; index += 1) {
+    scans.push(await scanMergeTarget(kv, targets[index], env));
+    if (delayMs > 0 && index < targets.length - 1) await wait(delayMs);
   }
   return scans;
 }
@@ -288,18 +307,18 @@ async function handleMergeTargets(req, url, env) {
     const keys = requestedKeys || await getMergeTargetIndex(kv);
     const targets = (await Promise.all(keys.map((key) => kv.get(mergeTargetKey(key), 'json')))).filter(Boolean);
     if (targets.length !== keys.length) return json({ error: 'One or more branch files are not registered.' }, 404);
-    const scans = await scanMergeTargets(kv, targets, env);
+    const scans = await scanMergeTargets(kv, targets, env, MANUAL_RESCAN_DELAY_MS);
     const notificationTargets = scans
-      .filter((scan) => scan.shouldNotify || body?.forceNotify === true)
+      .filter((scan) => !scan.deferred && (scan.shouldNotify || body?.forceNotify === true))
       .map((scan) => scan.target);
     await notifySlackOfMergeChanges(notificationTargets, env);
     await Promise.all(notificationTargets.map((target) => saveMergeTarget(kv, target)));
     const failed = notificationTargets.find((target) => target.lastNotificationError);
-    const statusCounts = scans.reduce((counts, scan) => {
+    const statusCounts = scans.filter((scan) => !scan.deferred).reduce((counts, scan) => {
       counts[scan.target.status] = (counts[scan.target.status] || 0) + 1;
       return counts;
     }, {});
-    return json({ scanned: scans.length, statusCounts, notified: !failed && notificationTargets.length > 0, notificationTargets: notificationTargets.length, error: failed?.lastNotificationError });
+    return json({ scanned: scans.length, deferred: scans.filter((scan) => scan.deferred).length, statusCounts, notified: !failed && notificationTargets.length > 0, notificationTargets: notificationTargets.length, error: failed?.lastNotificationError });
   }
   if (url.pathname === '/register-merge-target' && req.method === 'POST') {
     const body = await readBody(req);

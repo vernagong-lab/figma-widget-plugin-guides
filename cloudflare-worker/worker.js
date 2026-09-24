@@ -308,9 +308,11 @@ async function handleMergeTargets(req, url, env) {
     const targets = (await Promise.all(keys.map((key) => kv.get(mergeTargetKey(key), 'json')))).filter(Boolean);
     if (targets.length !== keys.length) return json({ error: 'One or more branch files are not registered.' }, 404);
     const scans = await scanMergeTargets(kv, targets, env, MANUAL_RESCAN_DELAY_MS);
-    const notificationTargets = scans
-      .filter((scan) => !scan.deferred && (scan.shouldNotify || body?.forceNotify === true))
-      .map((scan) => scan.target);
+    const notificationTargets = body?.notify === false
+      ? []
+      : scans
+        .filter((scan) => !scan.deferred && (scan.shouldNotify || body?.forceNotify === true))
+        .map((scan) => scan.target);
     await notifySlackOfMergeChanges(notificationTargets, env);
     await Promise.all(notificationTargets.map((target) => saveMergeTarget(kv, target)));
     const failed = notificationTargets.find((target) => target.lastNotificationError);

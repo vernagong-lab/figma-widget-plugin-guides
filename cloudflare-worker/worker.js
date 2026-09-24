@@ -72,8 +72,8 @@ function slackFileLink(target) {
   const label = String(target.label || target.branchFileKey).replace(/[|<>]/g, '');
   return `<https://www.figma.com/design/${target.branchFileKey}|${label}>`;
 }
-function buildSlackReminderText(targets, isTest = false) {
-  const lines = [isTest ? '*Figma UI Sync Reminder — Test*' : '*Figma UI Sync Reminder*'];
+function buildSlackReminderText(targets) {
+  const lines = ['*Figma UI Sync Reminder*'];
   for (const section of SLACK_REMINDER_SECTIONS) {
     const sectionTargets = targets.filter((target) => target.status === section.status);
     if (sectionTargets.length === 0) continue;
@@ -82,7 +82,7 @@ function buildSlackReminderText(targets, isTest = false) {
   }
   return lines.join('\n');
 }
-async function notifySlackOfMergeChanges(targets, env, isTest = false) {
+async function notifySlackOfMergeChanges(targets, env) {
   const actionable = targets.filter((target) => SLACK_REMINDER_SECTIONS.some((section) => section.status === target.status));
   if (actionable.length === 0 || !env.SLACK_BOT_TOKEN) return;
   const byChannel = new Map();
@@ -98,7 +98,7 @@ async function notifySlackOfMergeChanges(targets, env, isTest = false) {
       const response = await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
         headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json; charset=utf-8' },
-        body: JSON.stringify({ channel, text: buildSlackReminderText(channelTargets, isTest), unfurl_links: false, unfurl_media: false }),
+        body: JSON.stringify({ channel, text: buildSlackReminderText(channelTargets), unfurl_links: false, unfurl_media: false }),
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || `Slack returned ${response.status}`);
@@ -263,7 +263,7 @@ async function handleMergeTargets(req, url, env) {
     if (branchFileKeys.length === 0 || branchFileKeys.length !== requestedKeys.length) return json({ error: 'A valid branchFileKey or branchFileKeys array is required.' }, 400);
     const targets = (await Promise.all(branchFileKeys.map((key) => kv.get(mergeTargetKey(key), 'json')))).filter(Boolean);
     if (targets.length !== branchFileKeys.length) return json({ error: 'One or more branch files are not registered.' }, 404);
-    await notifySlackOfMergeChanges(targets, env, true);
+    await notifySlackOfMergeChanges(targets, env);
     await Promise.all(targets.map((target) => saveMergeTarget(kv, target)));
     const failed = targets.find((target) => target.lastNotificationError);
     if (failed) return json({ notified: false, error: failed.lastNotificationError }, 502);

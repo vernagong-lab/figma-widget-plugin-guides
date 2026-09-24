@@ -56,14 +56,11 @@ function validFolderId(value) {
 function mergeTargetKey(branchFileKey) {
   return MERGE_TARGET_PREFIX + branchFileKey;
 }
-function mergeStatusLabel(status) {
-  return {
-    'main-sync-required': 'Main sync is required',
-    'update-required': 'Update branch from main is required',
-    'up-to-date': 'Branch is up to date; background sync is queued',
-    'unavailable': 'Scan is unavailable',
-  }[status] || status;
-}
+const SLACK_REMINDER_SECTIONS = [
+  { status: 'main-sync-required', title: 'Auto-Sync Multiple UIs', instruction: 'Please open the following files to start auto-sync:' },
+  { status: 'update-required', title: 'Branch Merge', instruction: 'Branch needs to be updated from main. Please review and merge:' },
+  { status: 'unavailable', title: 'Unavailable', instruction: 'The following files could not be checked and will not be auto-synced:' },
+];
 async function getMergeTargetIndex(kv) {
   const index = await kv.get(MERGE_TARGET_INDEX_KEY, 'json');
   return Array.isArray(index) ? index.filter(validFileKey) : [];
@@ -71,30 +68,48 @@ async function getMergeTargetIndex(kv) {
 async function saveMergeTarget(kv, target) {
   await kv.put(mergeTargetKey(target.branchFileKey), JSON.stringify(target));
 }
-async function notifySlackOfMergeChange(target, env, isTest = false) {
-  const channel = target.notificationTarget || env.SLACK_NOTIFY_TARGET;
-  if (!channel || !env.SLACK_BOT_TOKEN) return;
-  const label = target.label || target.branchFileKey;
-  const text = [
-    isTest ? '*Figma UI sync notification test*' : '*Figma UI sync status changed*',
-    `*${label}*`,
-    `Status: ${mergeStatusLabel(target.status)}`,
-    `Checked: ${target.lastScannedAt}`,
-    `<https://www.figma.com/design/${target.branchFileKey}|Open Branch file in Figma>`,
-  ].join('\n');
+function slackFileLink(target) {
+  const label = String(target.label || target.branchFileKey).replace(/[|<>]/g, '');
+  return `<https://www.figma.com/design/${target.branchFileKey}|${label}>`;
+}
+function buildSlackReminderText(targets, isTest = false) {
+  const lines = [isTest ? '*Figma UI Sync Reminder — Test*' : '*Figma UI Sync Reminder*'];
+  for (const section of SLACK_REMINDER_SECTIONS) {
+    const sectionTargets = targets.filter((target) => target.status === section.status);
+    if (sectionTargets.length === 0) continue;
+    lines.push('', `\`${section.title}\``, section.instruction);
+    for (const target of sectionTargets) lines.push(`• ${slackFileLink(target)}`);
+  }
+  return lines.join('\n');
+}
+async function notifySlackOfMergeChanges(targets, env, isTest = false) {
+  const actionable = targets.filter((target) => SLACK_REMINDER_SECTIONS.some((section) => section.status === target.status));
+  if (actionable.length === 0 || !env.SLACK_BOT_TOKEN) return;
+  const byChannel = new Map();
+  for (const target of actionable) {
+    const channel = target.notificationTarget || env.SLACK_NOTIFY_TARGET;
+    if (!channel) continue;
+    const group = byChannel.get(channel) || [];
+    group.push(target);
+    byChannel.set(channel, group);
+  }
   try {
-    const response = await fetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ channel, text, unfurl_links: false, unfurl_media: false }),
-    });
-    const result = await response.json();
-    if (!response.ok || !result.ok) throw new Error(result.error || `Slack returned ${response.status}`);
-    target.lastNotificationAt = new Date().toISOString();
-    target.lastNotifiedStatus = target.status;
-    delete target.lastNotificationError;
+    for (const [channel, channelTargets] of byChannel) {
+      const response = await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ channel, text: buildSlackReminderText(channelTargets, isTest), unfurl_links: false, unfurl_media: false }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) throw new Error(result.error || `Slack returned ${response.status}`);
+    }
+    for (const target of actionable) {
+      target.lastNotificationAt = new Date().toISOString();
+      target.lastNotifiedStatus = target.status;
+      delete target.lastNotificationError;
+    }
   } catch (error) {
-    target.lastNotificationError = String(error?.message || error).slice(0, 500);
+    for (const target of actionable) target.lastNotificationError = String(error?.message || error).slice(0, 500);
   }
 }
 
@@ -195,18 +210,15 @@ async function scanMergeTarget(kv, target, env) {
     }
     }
   }
+  const shouldNotify = target.status !== previousStatus
+    && !(previousStatus === 'not-scanned' && target.suppressInitialNotification === true && target.status !== 'unavailable');
   if (target.status !== previousStatus) {
     target.lastStatusChangedAt = now;
-    // A scan may continue even when Slack is temporarily unavailable; the
-    // persisted status remains the source of truth for a later dashboard.
-    if (!(previousStatus === 'not-scanned' && target.suppressInitialNotification === true && target.status !== 'unavailable')) {
-      await notifySlackOfMergeChange(target, env);
-    }
   }
   target.suppressInitialNotification = false;
   target.nextScanAt = new Date(Date.now() + (target.status === 'unavailable' ? 60 * 60 * 1000 : WEEK_MS)).toISOString();
   await saveMergeTarget(kv, target);
-  return target;
+  return { target, shouldNotify };
 }
 
 async function upsertMergeTarget(kv, body, options = {}) {
@@ -246,15 +258,16 @@ async function handleMergeTargets(req, url, env) {
   }
   if (url.pathname === '/test-slack-notification' && req.method === 'POST') {
     const body = await readBody(req);
-    const branchFileKey = body?.branchFileKey || '';
-    if (!validFileKey(branchFileKey)) return json({ error: 'A valid branchFileKey is required.' }, 400);
-    const target = await kv.get(mergeTargetKey(branchFileKey), 'json');
-    if (!target) return json({ error: 'This branch file is not registered.' }, 404);
-    target.lastScannedAt = new Date().toISOString();
-    await notifySlackOfMergeChange(target, env, true);
-    await saveMergeTarget(kv, target);
-    if (target.lastNotificationError) return json({ notified: false, error: target.lastNotificationError }, 502);
-    return json({ notified: true, target: target.label || target.branchFileKey });
+    const requestedKeys = Array.isArray(body?.branchFileKeys) ? body.branchFileKeys : [body?.branchFileKey || ''];
+    const branchFileKeys = requestedKeys.filter(validFileKey).slice(0, 50);
+    if (branchFileKeys.length === 0 || branchFileKeys.length !== requestedKeys.length) return json({ error: 'A valid branchFileKey or branchFileKeys array is required.' }, 400);
+    const targets = (await Promise.all(branchFileKeys.map((key) => kv.get(mergeTargetKey(key), 'json')))).filter(Boolean);
+    if (targets.length !== branchFileKeys.length) return json({ error: 'One or more branch files are not registered.' }, 404);
+    await notifySlackOfMergeChanges(targets, env, true);
+    await Promise.all(targets.map((target) => saveMergeTarget(kv, target)));
+    const failed = targets.find((target) => target.lastNotificationError);
+    if (failed) return json({ notified: false, error: failed.lastNotificationError }, 502);
+    return json({ notified: true, targets: targets.map((target) => target.label || target.branchFileKey) });
   }
   if (url.pathname === '/register-merge-target' && req.method === 'POST') {
     const body = await readBody(req);
@@ -265,8 +278,10 @@ async function handleMergeTargets(req, url, env) {
     if (body.pageName !== undefined && typeof body.pageName !== 'string') return json({ error: 'pageName must be a string.' }, 400);
     if (body.notificationTarget !== undefined && typeof body.notificationTarget !== 'string') return json({ error: 'notificationTarget must be a string.' }, 400);
     const target = await upsertMergeTarget(kv, body);
-    await scanMergeTarget(kv, target, env);
-    return json({ registered: true, target });
+    const scan = await scanMergeTarget(kv, target, env);
+    if (scan.shouldNotify) await notifySlackOfMergeChanges([scan.target], env);
+    await saveMergeTarget(kv, scan.target);
+    return json({ registered: true, target: scan.target });
   }
   if (url.pathname === '/import-folder-targets' && req.method === 'POST') {
     const body = await readBody(req);
@@ -389,7 +404,13 @@ export default {
         .filter((target) => !target.nextScanAt || Date.parse(target.nextScanAt) <= now)
         .sort((a, b) => String(a.nextScanAt || '').localeCompare(String(b.nextScanAt || '')))
         .slice(0, SCAN_BATCH_SIZE);
-      for (const target of targets) await scanMergeTarget(kv, target, env);
+      const notifications = [];
+      for (const target of targets) {
+        const scan = await scanMergeTarget(kv, target, env);
+        if (scan.shouldNotify) notifications.push(scan.target);
+      }
+      await notifySlackOfMergeChanges(notifications, env);
+      await Promise.all(notifications.map((target) => saveMergeTarget(kv, target)));
     })());
   },
 };

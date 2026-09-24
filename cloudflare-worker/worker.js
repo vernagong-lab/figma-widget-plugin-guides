@@ -221,6 +221,16 @@ async function scanMergeTarget(kv, target, env) {
   return { target, shouldNotify };
 }
 
+async function scanMergeTargets(kv, targets, env) {
+  const scans = [];
+  // Limit concurrent Figma reads while still allowing an operator-requested
+  // full rescan to complete in a reasonable time.
+  for (let index = 0; index < targets.length; index += SCAN_BATCH_SIZE) {
+    scans.push(...await Promise.all(targets.slice(index, index + SCAN_BATCH_SIZE).map((target) => scanMergeTarget(kv, target, env))));
+  }
+  return scans;
+}
+
 async function upsertMergeTarget(kv, body, options = {}) {
   const existing = await kv.get(mergeTargetKey(body.branchFileKey), 'json');
   const target = {
@@ -268,6 +278,28 @@ async function handleMergeTargets(req, url, env) {
     const failed = targets.find((target) => target.lastNotificationError);
     if (failed) return json({ notified: false, error: failed.lastNotificationError }, 502);
     return json({ notified: true, targets: targets.map((target) => target.label || target.branchFileKey) });
+  }
+  if (url.pathname === '/scan-merge-targets' && req.method === 'POST') {
+    const body = await readBody(req);
+    const requestedKeys = body?.branchFileKeys;
+    if (requestedKeys !== undefined && (!Array.isArray(requestedKeys) || requestedKeys.length > 50 || requestedKeys.some((key) => !validFileKey(key)))) {
+      return json({ error: 'branchFileKeys must be an array of up to 50 valid registered branch file keys.' }, 400);
+    }
+    const keys = requestedKeys || await getMergeTargetIndex(kv);
+    const targets = (await Promise.all(keys.map((key) => kv.get(mergeTargetKey(key), 'json')))).filter(Boolean);
+    if (targets.length !== keys.length) return json({ error: 'One or more branch files are not registered.' }, 404);
+    const scans = await scanMergeTargets(kv, targets, env);
+    const notificationTargets = scans
+      .filter((scan) => scan.shouldNotify || body?.forceNotify === true)
+      .map((scan) => scan.target);
+    await notifySlackOfMergeChanges(notificationTargets, env);
+    await Promise.all(notificationTargets.map((target) => saveMergeTarget(kv, target)));
+    const failed = notificationTargets.find((target) => target.lastNotificationError);
+    const statusCounts = scans.reduce((counts, scan) => {
+      counts[scan.target.status] = (counts[scan.target.status] || 0) + 1;
+      return counts;
+    }, {});
+    return json({ scanned: scans.length, statusCounts, notified: !failed && notificationTargets.length > 0, notificationTargets: notificationTargets.length, error: failed?.lastNotificationError });
   }
   if (url.pathname === '/register-merge-target' && req.method === 'POST') {
     const body = await readBody(req);
@@ -379,7 +411,7 @@ async function handle(req, env) {
   if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
   const url = new URL(req.url);
   if (url.pathname === '/validate-branch-marker') return handleBranchMarkerValidation(req, url, env);
-  if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target' || url.pathname === '/import-folder-targets' || url.pathname === '/test-slack-notification') return handleMergeTargets(req, url, env);
+  if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target' || url.pathname === '/import-folder-targets' || url.pathname === '/test-slack-notification' || url.pathname === '/scan-merge-targets') return handleMergeTargets(req, url, env);
   if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync') return handleAutomation(req, url, env);
 
   const target = 'https://api.lokalise.com' + url.pathname + url.search;
@@ -404,11 +436,9 @@ export default {
         .filter((target) => !target.nextScanAt || Date.parse(target.nextScanAt) <= now)
         .sort((a, b) => String(a.nextScanAt || '').localeCompare(String(b.nextScanAt || '')))
         .slice(0, SCAN_BATCH_SIZE);
-      const notifications = [];
-      for (const target of targets) {
-        const scan = await scanMergeTarget(kv, target, env);
-        if (scan.shouldNotify) notifications.push(scan.target);
-      }
+      const notifications = (await scanMergeTargets(kv, targets, env))
+        .filter((scan) => scan.shouldNotify)
+        .map((scan) => scan.target);
       await notifySlackOfMergeChanges(notifications, env);
       await Promise.all(notifications.map((target) => saveMergeTarget(kv, target)));
     })());

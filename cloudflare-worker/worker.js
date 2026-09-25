@@ -15,6 +15,10 @@ const MARKER_KEY = 'lokMainAllUiSyncRevision';
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const SCAN_BATCH_SIZE = 4;
 const MANUAL_RESCAN_DELAY_MS = 8500;
+const SLACK_BATCH_PREFIX = 'slack-batch:v1:';
+const SLACK_BATCH_INDEX_KEY = 'slack-batch-index:v1';
+const SLACK_BATCH_WINDOW_MS = 48 * 60 * 60 * 1000;
+const TAIPEI_UTC_HOUR = 9;
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', ...CORS } });
@@ -57,6 +61,15 @@ function validFolderId(value) {
 function mergeTargetKey(branchFileKey) {
   return MERGE_TARGET_PREFIX + branchFileKey;
 }
+function slackBatchKey(batchId) {
+  return SLACK_BATCH_PREFIX + batchId;
+}
+function taipeiDate(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Taipei' }).format(date);
+}
+function isActiveSlackBatch(target, now = Date.now()) {
+  return !!target.activeSlackBatchId && Number(target.activeSlackBatchExpiresAt || 0) > now;
+}
 const SLACK_REMINDER_SECTIONS = [
   { status: 'main-sync-required', title: 'Auto-Sync Multiple UIs', instruction: 'Please open the following files to start auto-sync:' },
   { status: 'update-required', title: 'Branch Merge', instruction: 'Branch needs to be updated from main. Please review and merge:' },
@@ -68,6 +81,42 @@ async function getMergeTargetIndex(kv) {
 }
 async function saveMergeTarget(kv, target) {
   await kv.put(mergeTargetKey(target.branchFileKey), JSON.stringify(target));
+}
+async function getSlackBatchIndex(kv) {
+  const index = await kv.get(SLACK_BATCH_INDEX_KEY, 'json');
+  return Array.isArray(index) ? index.filter((id) => typeof id === 'string') : [];
+}
+async function getSlackBatch(kv, batchId) {
+  return await kv.get(slackBatchKey(batchId), 'json');
+}
+async function saveSlackBatch(kv, batch) {
+  await kv.put(slackBatchKey(batch.id), JSON.stringify(batch), { expirationTtl: HISTORY_TTL_SECONDS });
+}
+async function createSlackBatch(kv, channel, threadTs, targets) {
+  const now = Date.now();
+  const batch = {
+    id: crypto.randomUUID(),
+    channel,
+    threadTs,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: now + SLACK_BATCH_WINDOW_MS,
+    branchFileKeys: targets.map((target) => target.branchFileKey),
+    events: [],
+  };
+  const index = await getSlackBatchIndex(kv);
+  index.push(batch.id);
+  await kv.put(SLACK_BATCH_INDEX_KEY, JSON.stringify(index.slice(-100)));
+  await saveSlackBatch(kv, batch);
+  return batch;
+}
+async function recordSlackBatchEvent(kv, batchId, branchFileKey, type, message = '') {
+  if (!batchId) return;
+  const batch = await getSlackBatch(kv, batchId);
+  if (!batch || Number(batch.expiresAt || 0) <= Date.now()) return;
+  batch.events = Array.isArray(batch.events) ? batch.events : [];
+  batch.events.push({ at: new Date().toISOString(), branchFileKey, type, message: String(message).slice(0, 500) });
+  batch.events = batch.events.slice(-200);
+  await saveSlackBatch(kv, batch);
 }
 function slackFileLink(target) {
   const label = String(target.label || target.branchFileKey).replace(/[|<>]/g, '');
@@ -83,7 +132,7 @@ function buildSlackReminderText(targets) {
   }
   return lines.join('\n');
 }
-async function notifySlackOfMergeChanges(targets, env) {
+async function notifySlackOfMergeChanges(kv, targets, env) {
   const actionable = targets.filter((target) => SLACK_REMINDER_SECTIONS.some((section) => section.status === target.status));
   if (actionable.length === 0 || !env.SLACK_BOT_TOKEN) return;
   const byChannel = new Map();
@@ -103,6 +152,11 @@ async function notifySlackOfMergeChanges(targets, env) {
       });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.error || `Slack returned ${response.status}`);
+      const batch = await createSlackBatch(kv, channel, result.ts, channelTargets);
+      for (const target of channelTargets) {
+        target.activeSlackBatchId = batch.id;
+        target.activeSlackBatchExpiresAt = batch.expiresAt;
+      }
     }
     for (const target of actionable) {
       target.lastNotificationAt = new Date().toISOString();
@@ -111,6 +165,82 @@ async function notifySlackOfMergeChanges(targets, env) {
     }
   } catch (error) {
     for (const target of actionable) target.lastNotificationError = String(error?.message || error).slice(0, 500);
+  }
+}
+
+async function getJobForMergeTarget(kv, target) {
+  return await getJob(kv, {
+    fileKey: target.branchFileKey,
+    pageId: target.pageId || '',
+    pageName: target.pageName || 'All UI',
+    mode: 'branch',
+  });
+}
+function batchDailyStatus(target, job, events, since) {
+  const recentEvents = events.filter((event) => event.branchFileKey === target.branchFileKey && Date.parse(event.at) > since);
+  const latest = recentEvents[recentEvents.length - 1];
+  if (latest?.type === 'success') return '✅ Sync completed';
+  if (latest?.type === 'failed') return `❌ Sync failed${latest.message ? ` — ${latest.message}` : ''}`;
+  if (latest?.type === 'blocked') return `⏳ Sync is blocked${latest.message ? ` — ${latest.message}` : ''}`;
+  if (job?.state === 'running') return '🔄 Sync is in progress';
+  if (job?.state === 'pending') return '⏳ Waiting for the Figma file to open';
+  if (target.status === 'update-required') return '⏳ Waiting for Branch Merge';
+  if (target.status === 'main-sync-required') return '⏳ Waiting for Sync to All UI in Main';
+  if (target.status === 'unavailable') return `⚠️ ${target.error || 'All UI is unavailable'}`;
+  if (latest?.type === 'queued') return '⏳ Auto-sync is queued';
+  return '';
+}
+async function sendDailySlackBatchReports(kv, env) {
+  if (!env.SLACK_BOT_TOKEN) return;
+  const date = taipeiDate();
+  const batches = (await Promise.all((await getSlackBatchIndex(kv)).map((id) => getSlackBatch(kv, id)))).filter(Boolean);
+  for (const batch of batches) {
+    if (Number(batch.expiresAt || 0) <= Date.now() || batch.lastDailyReportDate === date) continue;
+    const targets = (await Promise.all((batch.branchFileKeys || []).map((key) => kv.get(mergeTargetKey(key), 'json'))))
+      .filter((target) => target && target.activeSlackBatchId === batch.id);
+    const since = Date.parse(batch.lastDailyReportAt || batch.createdAt || 0) || 0;
+    const events = Array.isArray(batch.events) ? batch.events : [];
+    const lines = [];
+    for (const target of targets) {
+      const status = batchDailyStatus(target, await getJobForMergeTarget(kv, target), events, since);
+      if (status) lines.push(`• ${slackFileLink(target)} — ${status}`);
+    }
+    if (lines.length > 0) {
+      const response = await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${env.SLACK_BOT_TOKEN}`, 'Content-Type': 'application/json; charset=utf-8' },
+        body: JSON.stringify({ channel: batch.channel, thread_ts: batch.threadTs, text: `*Daily UI Sync Status — ${date}*\n${lines.join('\n')}`, unfurl_links: false, unfurl_media: false }),
+      });
+      const result = await response.json();
+      if (!response.ok || !result.ok) continue;
+    }
+    batch.lastDailyReportDate = date;
+    batch.lastDailyReportAt = new Date().toISOString();
+    await saveSlackBatch(kv, batch);
+  }
+}
+async function expireSlackBatches(kv) {
+  const batches = (await Promise.all((await getSlackBatchIndex(kv)).map((id) => getSlackBatch(kv, id)))).filter(Boolean);
+  for (const batch of batches) {
+    if (Number(batch.expiresAt || 0) > Date.now() || batch.expiredAt) continue;
+    for (const branchFileKey of batch.branchFileKeys || []) {
+      const target = await kv.get(mergeTargetKey(branchFileKey), 'json');
+      if (!target || target.activeSlackBatchId !== batch.id) continue;
+      delete target.activeSlackBatchId;
+      delete target.activeSlackBatchExpiresAt;
+      await saveMergeTarget(kv, target);
+      const job = await getJobForMergeTarget(kv, target);
+      if (job?.batchId === batch.id && (job.state === 'pending' || job.state === 'running')) {
+        job.state = 'expired';
+        job.lastOutcome = 'expired';
+        job.lastUpdatedAt = new Date().toISOString();
+        delete job.claimedAt;
+        delete job.leaseUntil;
+        await kv.put(jobKey(job), JSON.stringify(job), { expirationTtl: HISTORY_TTL_SECONDS });
+      }
+    }
+    batch.expiredAt = new Date().toISOString();
+    await saveSlackBatch(kv, batch);
   }
 }
 
@@ -172,6 +302,9 @@ async function handleBranchMarkerValidation(req, url, env) {
 }
 
 async function queueMergeSync(kv, target, revision) {
+  // A merge is only actionable while the Slack reminder that prompted it is
+  // still active. Expired reminders roll unresolved work into the next scan.
+  if (!target.autoSync || !isActiveSlackBatch(target)) return false;
   const syncTarget = {
     fileKey: target.branchFileKey,
     pageId: target.pageId || '',
@@ -181,11 +314,14 @@ async function queueMergeSync(kv, target, revision) {
   const existing = await getJob(kv, syncTarget);
   // Never replace an active Widget lease. The next scan can queue a new job.
   if (existing && (existing.state === 'pending' || existing.state === 'running')) return false;
-  await kv.put(jobKey(syncTarget), JSON.stringify({
+  const job = {
     id: crypto.randomUUID(), ...syncTarget, state: 'pending',
     requestedAt: new Date().toISOString(), requestedBy: 'merge-scan',
     mergeRevision: revision,
-  }));
+    batchId: target.activeSlackBatchId,
+  };
+  await kv.put(jobKey(syncTarget), JSON.stringify(job));
+  await recordSlackBatchEvent(kv, job.batchId, target.branchFileKey, 'queued');
   return true;
 }
 
@@ -292,7 +428,7 @@ async function handleMergeTargets(req, url, env) {
     if (branchFileKeys.length === 0 || branchFileKeys.length !== requestedKeys.length) return json({ error: 'A valid branchFileKey or branchFileKeys array is required.' }, 400);
     const targets = (await Promise.all(branchFileKeys.map((key) => kv.get(mergeTargetKey(key), 'json')))).filter(Boolean);
     if (targets.length !== branchFileKeys.length) return json({ error: 'One or more branch files are not registered.' }, 404);
-    await notifySlackOfMergeChanges(targets, env);
+    await notifySlackOfMergeChanges(kv, targets, env);
     await Promise.all(targets.map((target) => saveMergeTarget(kv, target)));
     const failed = targets.find((target) => target.lastNotificationError);
     if (failed) return json({ notified: false, error: failed.lastNotificationError }, 502);
@@ -313,7 +449,7 @@ async function handleMergeTargets(req, url, env) {
       : scans
         .filter((scan) => !scan.deferred && (scan.shouldNotify || body?.forceNotify === true))
         .map((scan) => scan.target);
-    await notifySlackOfMergeChanges(notificationTargets, env);
+    await notifySlackOfMergeChanges(kv, notificationTargets, env);
     await Promise.all(notificationTargets.map((target) => saveMergeTarget(kv, target)));
     const failed = notificationTargets.find((target) => target.lastNotificationError);
     const statusCounts = scans.filter((scan) => !scan.deferred).reduce((counts, scan) => {
@@ -332,7 +468,7 @@ async function handleMergeTargets(req, url, env) {
     if (body.notificationTarget !== undefined && typeof body.notificationTarget !== 'string') return json({ error: 'notificationTarget must be a string.' }, 400);
     const target = await upsertMergeTarget(kv, body);
     const scan = await scanMergeTarget(kv, target, env);
-    if (scan.shouldNotify) await notifySlackOfMergeChanges([scan.target], env);
+    if (scan.shouldNotify) await notifySlackOfMergeChanges(kv, [scan.target], env);
     await saveMergeTarget(kv, scan.target);
     return json({ registered: true, target: scan.target });
   }
@@ -386,6 +522,21 @@ async function handleAutomation(req, url, env) {
   }
 
   const body = await readBody(req);
+  // A Widget can only request an immediate scan for its own, registered Branch.
+  // The Worker revalidates the Figma markers and never exposes merge metadata.
+  if (url.pathname === '/branch-merged' && req.method === 'POST') {
+    const branchFileKey = body?.branchFileKey || '';
+    if (!validFileKey(branchFileKey)) return json({ error: 'A valid branchFileKey is required.' }, 400);
+    const mergeTarget = await kv.get(mergeTargetKey(branchFileKey), 'json');
+    if (!mergeTarget) return json({ error: 'This Branch file is not registered for sync.' }, 404);
+    if (!isActiveSlackBatch(mergeTarget)) return json({ queued: false, windowExpired: true, status: mergeTarget.status || 'not-scanned' });
+    const scan = await scanMergeTarget(kv, mergeTarget, env);
+    return json({
+      queued: scan.target.lastQueuedRevision === scan.target.branchRevision,
+      status: scan.target.status,
+      deferred: !!scan.deferred,
+    });
+  }
   if (!validTarget(body)) return json({ error: 'fileKey, pageId or pageName, and mode are required.' }, 400);
   const target = { fileKey: body.fileKey, pageId: body.pageId || '', pageName: body.pageName || '', mode: body.mode };
   const key = jobKey(target);
@@ -404,11 +555,16 @@ async function handleAutomation(req, url, env) {
 
   if (url.pathname === '/claim-sync' && req.method === 'POST') {
     const job = await getJob(kv, target);
+    if (job?.batchId) {
+      const batch = await getSlackBatch(kv, job.batchId);
+      if (!batch || Number(batch.expiresAt || 0) <= Date.now()) return json({ claimed: false, expired: true });
+    }
     if (!job || job.state !== 'pending' || (body.id && body.id !== job.id)) return json({ claimed: false });
     job.state = 'running';
     job.claimedAt = new Date().toISOString();
     job.leaseUntil = Date.now() + LEASE_MS;
     await kv.put(key, JSON.stringify(job));
+    if (job.batchId) await recordSlackBatchEvent(kv, job.batchId, job.fileKey, 'started');
     return json({ claimed: true, job });
   }
 
@@ -423,6 +579,7 @@ async function handleAutomation(req, url, env) {
     delete job.claimedAt;
     delete job.leaseUntil;
     await kv.put(key, JSON.stringify(job), body.outcome === 'success' ? { expirationTtl: HISTORY_TTL_SECONDS } : undefined);
+    if (job.batchId) await recordSlackBatchEvent(kv, job.batchId, job.fileKey, body.outcome, job.lastMessage);
     return json({ acknowledged: true, pending: job.state === 'pending' });
   }
   return json({ error: 'Automation endpoint not found.' }, 404);
@@ -433,7 +590,7 @@ async function handle(req, env) {
   const url = new URL(req.url);
   if (url.pathname === '/validate-branch-marker') return handleBranchMarkerValidation(req, url, env);
   if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target' || url.pathname === '/import-folder-targets' || url.pathname === '/test-slack-notification' || url.pathname === '/scan-merge-targets') return handleMergeTargets(req, url, env);
-  if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync') return handleAutomation(req, url, env);
+  if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync' || url.pathname === '/branch-merged') return handleAutomation(req, url, env);
 
   const target = 'https://api.lokalise.com' + url.pathname + url.search;
   const headers = {};
@@ -451,6 +608,7 @@ export default {
     const kv = getSyncJobsBinding(env);
     if (!kv) return;
     ctx.waitUntil((async () => {
+      await expireSlackBatches(kv);
       const now = Date.now();
       const targets = (await Promise.all((await getMergeTargetIndex(kv)).map((key) => kv.get(mergeTargetKey(key), 'json'))))
         .filter(Boolean)
@@ -460,8 +618,9 @@ export default {
       const notifications = (await scanMergeTargets(kv, targets, env))
         .filter((scan) => scan.shouldNotify)
         .map((scan) => scan.target);
-      await notifySlackOfMergeChanges(notifications, env);
+      await notifySlackOfMergeChanges(kv, notifications, env);
       await Promise.all(notifications.map((target) => saveMergeTarget(kv, target)));
+      if (new Date(now).getUTCHours() === TAIPEI_UTC_HOUR) await sendDailySlackBatchReports(kv, env);
     })());
   },
 };

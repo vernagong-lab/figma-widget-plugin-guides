@@ -187,7 +187,7 @@ function batchDailyStatus(target, job, events, since) {
   if (job?.state === 'running') return '🔄 Sync is in progress';
   if (job?.state === 'pending') return '⏳ Waiting for the Figma file to open';
   if (target.status === 'update-required') return '⏳ Waiting for Branch Merge';
-  if (target.status === 'main-sync-required') return '⏳ Waiting for Sync to All UI in Main';
+  if (target.status === 'baseline-untracked') return 'ℹ️ Tracking begins after the next Main Sync to All UI';
   if (target.status === 'unavailable') return `⚠️ ${target.error || 'All UI is unavailable'}`;
   if (latest?.type === 'queued') return '⏳ Auto-sync is queued';
   return '';
@@ -354,8 +354,12 @@ async function scanMergeTarget(kv, target, env) {
     target.mainRevision = main.shared[MARKER_KEY] || null;
     target.branchRevision = branch.shared[MARKER_KEY] || null;
     delete target.error;
+    // Files registered before this automation shipped have no Widget-owned
+    // revision marker. That is an untracked baseline, not a request for a
+    // designer to redo historic work. Tracking starts at the next successful
+    // Main Sync to All UI, when the Widget writes its first marker.
     target.status = !target.mainRevision
-      ? 'main-sync-required'
+      ? 'baseline-untracked'
       : target.mainRevision === target.branchRevision ? 'up-to-date' : 'update-required';
     if (target.status === 'up-to-date' && target.autoSync === true && target.lastQueuedRevision !== target.branchRevision) {
       if (await queueMergeSync(kv, target, target.branchRevision)) target.lastQueuedRevision = target.branchRevision;
@@ -422,6 +426,23 @@ async function handleMergeTargets(req, url, env) {
   if (url.pathname === '/merge-targets' && req.method === 'GET') {
     const targets = await Promise.all((await getMergeTargetIndex(kv)).map((key) => kv.get(mergeTargetKey(key), 'json')));
     return json({ targets: targets.filter(Boolean) });
+  }
+  // One-time-safe migration for targets registered before revision markers
+  // existed. It changes Worker bookkeeping only; it never reads or writes a
+  // Figma canvas/file and therefore never asks designers to redo a sync.
+  if (url.pathname === '/adopt-legacy-baselines' && req.method === 'POST') {
+    const targets = (await Promise.all((await getMergeTargetIndex(kv)).map((key) => kv.get(mergeTargetKey(key), 'json')))).filter(Boolean);
+    const adoptedAt = new Date().toISOString();
+    const adopted = [];
+    for (const target of targets) {
+      if (target.status !== 'main-sync-required') continue;
+      target.status = 'baseline-untracked';
+      target.baselineAdoptedAt = adoptedAt;
+      target.lastStatusChangedAt = adoptedAt;
+      await saveMergeTarget(kv, target);
+      adopted.push(target.label || target.branchFileKey);
+    }
+    return json({ adopted: adopted.length, targets: adopted });
   }
   if (url.pathname === '/test-slack-notification' && req.method === 'POST') {
     const body = await readBody(req);

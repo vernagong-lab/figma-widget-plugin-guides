@@ -71,9 +71,11 @@ function isActiveSlackBatch(target, now = Date.now()) {
   return !!target.activeSlackBatchId && Number(target.activeSlackBatchExpiresAt || 0) > now;
 }
 const SLACK_REMINDER_SECTIONS = [
-  { status: 'main-sync-required', title: 'Auto-Sync Multiple UIs', instruction: 'Please open the following files to start auto-sync:' },
-  { status: 'update-required', title: 'Branch Merge', instruction: 'Branch needs to be updated from main. Please review and merge:' },
-  { status: 'unavailable', title: 'Unavailable', instruction: 'The following files could not be checked and will not be auto-synced:' },
+  {
+    status: 'update-required',
+    title: 'Need to Sync Multiple UIs',
+    instruction: 'Please open the following files to start auto-sync (`apply Update from main if Figma shows updates`):',
+  },
 ];
 async function getMergeTargetIndex(kv) {
   const index = await kv.get(MERGE_TARGET_INDEX_KEY, 'json');
@@ -537,6 +539,23 @@ async function handleAutomation(req, url, env) {
       deferred: !!scan.deferred,
     });
   }
+  // A successful Main Sync to All UI is a controlled, verifiable event. Scan
+  // only its registered MKT Branches now, rather than waiting for the weekly
+  // dispatcher or attempting to infer Figma's native update banner.
+  if (url.pathname === '/main-synced' && req.method === 'POST') {
+    const mainFileKey = body?.mainFileKey || '';
+    if (!validFileKey(mainFileKey)) return json({ error: 'A valid mainFileKey is required.' }, 400);
+    const matchingTargets = (await Promise.all((await getMergeTargetIndex(kv)).map((key) => kv.get(mergeTargetKey(key), 'json'))))
+      .filter((target) => target?.mainFileKey === mainFileKey);
+    if (matchingTargets.length === 0) return json({ notified: false, targets: 0, reason: 'No registered MKT Branches for this Main file.' });
+    // Let Figma persist the root marker before reading it through the REST API.
+    await wait(1500);
+    const scans = await scanMergeTargets(kv, matchingTargets, env);
+    const notificationTargets = scans.filter((scan) => !scan.deferred && scan.shouldNotify && scan.target.status === 'update-required').map((scan) => scan.target);
+    await notifySlackOfMergeChanges(kv, notificationTargets, env);
+    await Promise.all(notificationTargets.map((target) => saveMergeTarget(kv, target)));
+    return json({ notified: notificationTargets.length > 0, targets: matchingTargets.length, notificationTargets: notificationTargets.length });
+  }
   if (!validTarget(body)) return json({ error: 'fileKey, pageId or pageName, and mode are required.' }, 400);
   const target = { fileKey: body.fileKey, pageId: body.pageId || '', pageName: body.pageName || '', mode: body.mode };
   const key = jobKey(target);
@@ -590,7 +609,7 @@ async function handle(req, env) {
   const url = new URL(req.url);
   if (url.pathname === '/validate-branch-marker') return handleBranchMarkerValidation(req, url, env);
   if (url.pathname === '/merge-targets' || url.pathname === '/register-merge-target' || url.pathname === '/import-folder-targets' || url.pathname === '/test-slack-notification' || url.pathname === '/scan-merge-targets') return handleMergeTargets(req, url, env);
-  if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync' || url.pathname === '/branch-merged') return handleAutomation(req, url, env);
+  if (url.pathname.startsWith('/sync-') || url.pathname === '/request-sync' || url.pathname === '/claim-sync' || url.pathname === '/ack-sync' || url.pathname === '/branch-merged' || url.pathname === '/main-synced') return handleAutomation(req, url, env);
 
   const target = 'https://api.lokalise.com' + url.pathname + url.search;
   const headers = {};
